@@ -166,6 +166,7 @@
     <string name="playback_font_imported">已导入字体：%1$s</string>
     <string name="playback_font_import_failed">无法导入字体</string>
     <string name="playback_font_load_failed">无法加载字体</string>
+    <string name="subtitle_style_source">样式来源</string>
     <string name="subtitle_style_original">原始</string>
     <string name="subtitle_style_system">系统</string>
     <string name="subtitle_style_custom">自定义</string>

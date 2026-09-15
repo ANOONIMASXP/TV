@@ -166,6 +166,7 @@
     <string name="playback_font_imported">Font imported: %1$s</string>
     <string name="playback_font_import_failed">Unable to import font</string>
     <string name="playback_font_load_failed">Unable to load fonts</string>
+    <string name="subtitle_style_source">Style source</string>
     <string name="subtitle_style_original">Original</string>
     <string name="subtitle_style_system">System</string>
     <string name="subtitle_style_custom">Custom</string>
