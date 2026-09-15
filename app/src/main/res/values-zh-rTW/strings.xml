@@ -166,6 +166,7 @@
     <string name="playback_font_imported">已匯入字型：%1$s</string>
     <string name="playback_font_import_failed">無法匯入字型</string>
     <string name="playback_font_load_failed">無法載入字型</string>
+    <string name="subtitle_style_source">樣式來源</string>
     <string name="subtitle_style_original">原始</string>
     <string name="subtitle_style_system">系統</string>
     <string name="subtitle_style_custom">自訂</string>
