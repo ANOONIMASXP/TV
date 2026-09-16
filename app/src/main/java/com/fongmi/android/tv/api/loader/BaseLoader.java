@@ -13,6 +13,7 @@ import com.github.catvod.utils.Crypto;
 
 import org.json.JSONObject;
 
+import java.io.File;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -56,10 +57,30 @@ public class BaseLoader {
     }
 
     public Spider getSpider(String key, String api, String ext, String jar) {
+        if (api.startsWith("jar://")) {
+            api = resolveJar(api, jar);
+            if (api.isEmpty()) return new SpiderNull();
+        }
+        if (ext.startsWith("jar://")) ext = jarLoader.ext(ext, jar);
         if (isPy(api)) return pyLoader.getSpider(key, api, ext);
         else if (isJs(api)) return jsLoader.getSpider(key, api, ext, jar);
         else if (isCsp(api)) return jarLoader.getSpider(key, api, ext, jar);
         else return new SpiderNull();
+    }
+
+    private String resolveJar(String api, String jar) {
+        try {
+            if (!api.endsWith(".py") && !api.endsWith(".js")) return "";
+            File file = jarLoader.file(api, jar);
+            return file != null ? "file://" + file.getAbsolutePath() : "";
+        } catch (Throwable e) {
+            e.printStackTrace();
+            return "";
+        }
+    }
+
+    public String ext(String ext, String jar) {
+        return ext.startsWith("jar://") ? jarLoader.ext(ext, jar) : ext;
     }
 
     public Spider getSpider(String key) {

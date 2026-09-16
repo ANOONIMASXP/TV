@@ -5,15 +5,23 @@ import json
 
 
 def spider(cache, api):
-    name = os.path.basename(api)
-    path = cache + '/' + name
-    download(path, api)
-    name = name.split('.')[0]
+    if api.startswith('file://'):
+        path = api[7:]
+    else:
+        name = os.path.basename(api)
+        path = cache + '/' + name
+        download(path, api)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    parent = os.path.basename(os.path.dirname(path))
+    name = f'{parent}_{stem}' if parent and parent != 'py' else stem
     return SourceFileLoader(name, path).load_module().Spider()
 
 
 def download(path, api):
-    if api.startswith('http'):
+    if api.startswith('file://'):
+        with open(api[7:], 'rb') as f:
+            writeFile(path, f.read())
+    elif api.startswith('http'):
         writeFile(path, redirect(api).content)
     else:
         writeFile(path, str.encode(api))

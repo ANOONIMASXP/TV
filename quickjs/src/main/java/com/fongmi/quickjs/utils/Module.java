@@ -5,6 +5,9 @@ import android.util.LruCache;
 
 import com.github.catvod.net.OkHttp;
 import com.github.catvod.utils.Asset;
+import com.github.catvod.utils.Path;
+
+import java.io.File;
 
 public class Module {
 
@@ -25,6 +28,7 @@ public class Module {
         if (name.startsWith("http")) cache.put(name, content = OkHttp.string(name));
         else if (name.startsWith("assets")) cache.put(name, content = Asset.read(name));
         else if (name.startsWith("lib/")) cache.put(name, content = Asset.read("js/" + name));
+        else if (name.startsWith("file")) cache.put(name, content = Path.read(new File(name.substring("file://".length()))));
         return content;
     }
 
