@@ -15,15 +15,22 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.lang.reflect.Method;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 import dalvik.system.DexClassLoader;
 
 public class JarLoader {
+
+    private static final String ASSETS = "assets/";
+    private static final int MAX_ENTRIES = 2000;
+    private static final long MAX_BYTES = 64L * 1024 * 1024;
 
     private final ConcurrentHashMap<String, DexClassLoader> loaders;
     private final ConcurrentHashMap<String, Method> methods;
@@ -54,11 +61,59 @@ public class JarLoader {
     private void load(String key, File file) {
         if (Thread.interrupted()) return;
         if (!Path.exists(file) || !file.setReadOnly()) return;
+        extract(file, key);
         String cachePath = Path.jar().getAbsolutePath();
         DexClassLoader loader = new DexClassLoader(file.getAbsolutePath(), cachePath, cachePath, App.get().getClassLoader());
         invokeInit(loader);
         invokeProxy(key, loader);
         loaders.put(key, loader);
+    }
+
+    public File file(String link, String jar) {
+        try {
+            if (jar == null || jar.isEmpty()) return null;
+            String name = link.substring("jar://".length());
+            if (!name.startsWith(ASSETS)) return null;
+            String key = Crypto.md5(jar);
+            parseJar(key, jar);
+            File file = new File(Path.cache(key), name);
+            return file.isFile() ? file : null;
+        } catch (Throwable e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public String ext(String link, String jar) {
+        File file = file(link, jar);
+        return file != null ? Path.read(file) : link;
+    }
+
+    private void extract(File file, String key) {
+        File root = Path.cache(key);
+        Path.clear(root);
+        root.mkdirs();
+        try (ZipFile zip = new ZipFile(file)) {
+            String base = root.getCanonicalPath() + File.separator;
+            int count = 0;
+            long total = 0;
+            Enumeration<? extends ZipEntry> entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry entry = entries.nextElement();
+                if (entry.isDirectory()) continue;
+                String name = entry.getName();
+                if (!name.startsWith(ASSETS)) continue;
+                File out = new File(root, name);
+                if (!out.getCanonicalPath().startsWith(base)) continue;
+                if (++count > MAX_ENTRIES) break;
+                long size = entry.getSize();
+                if (size > 0) total += size;
+                if (total > MAX_BYTES) break;
+                Path.copy(zip.getInputStream(entry), out);
+            }
+        } catch (Throwable e) {
+            e.printStackTrace();
+        }
     }
 
     private void invokeInit(DexClassLoader loader) {

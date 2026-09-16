@@ -309,6 +309,11 @@ public class Site implements Parcelable {
     }
 
     public Site fetchExt() {
+        if (getExt().startsWith("jar://")) {
+            String extend = BaseLoader.get().ext(getExt(), getJar());
+            if (!extend.isEmpty()) setExt(extend);
+            return this;
+        }
         if (!getExt().startsWith("http")) return this;
         String extend = OkHttp.string(getExt());
         if (!extend.isEmpty()) setExt(extend);
