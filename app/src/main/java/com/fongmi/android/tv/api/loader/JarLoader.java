@@ -76,7 +76,7 @@ public class JarLoader {
             if (!name.startsWith(ASSETS)) return null;
             String key = Crypto.md5(jar);
             parseJar(key, jar);
-            File file = new File(Path.cache(key), name);
+            File file = new File(new File(Path.jar(), key), name);
             return file.isFile() ? file : null;
         } catch (Throwable e) {
             e.printStackTrace();
@@ -90,7 +90,7 @@ public class JarLoader {
     }
 
     private void extract(File file, String key) {
-        File root = Path.cache(key);
+        File root = new File(Path.jar(), key);
         Path.clear(root);
         root.mkdirs();
         try (ZipFile zip = new ZipFile(file)) {
