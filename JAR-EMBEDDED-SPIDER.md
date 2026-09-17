@@ -13,10 +13,16 @@
   - `assets/demo.json`
 - 站点引用统一写作 `jar://assets/<文件名>`，路径必须与 jar 内条目完全一致（含 `assets/` 前缀）。
 - jar 源由配置顶层 `spider` 或站点自身 `jar` 提供（两者至少一个）。
+- **只有配置里的接口原始 scheme 为 `http(s)://` 且配置了 `;md5;<值>` 才会解压 `assets/`**：
+  - `"spider": "https://xxx/custom_spider.jar;md5;63ffa738426ba80376f03d03110e0b80"` → 解压。
+  - `"spider": "https://xxx/custom_spider.jar"` → 只加载 dex，不解压。
+  - `"spider": "file://.../custom_spider.jar;md5;<值>"` → 只加载 dex，不解压。
+  - `"spider": "assets://custom_spider.jar;md5;<值>"` → 只加载 dex，不解压（`assets://` 虽经本地 http 中转，但接口原始 scheme 不是 http）。
 
 ### 落盘位置
 
-jar 加载时解压到 `cache/jar/<md5(jar)>/`，保留 `assets/` 前缀：
+jar 加载时解压到 `cache/jar/<md5>/`，其中 `<md5>` 就是配置 `;md5;` 里写的值（内容校验 md5），保留 `assets/` 前缀。
+例如 `"spider": "https://xxx/custom_spider.jar;md5;63ffa738426ba80376f03d03110e0b80"` → `cache/jar/63ffa738426ba80376f03d03110e0b80/assets/...`
 
 | 配置 | jar 内条目 | 解压 / 读取位置 |
 |---|---|---|
@@ -67,7 +73,10 @@ jar 加载时解压到 `cache/jar/<md5(jar)>/`，保留 `assets/` 前缀：
 ### 3.1 `app/src/main/java/com/fongmi/android/tv/api/loader/JarLoader.java`
 
 - 新增常量：`ASSETS = "assets/"`、`MAX_ENTRIES = 2000`、`MAX_BYTES = 64MB`。
-- `load(String key, File file)`：在创建 `DexClassLoader` 前调用 `extract(file, key)`。
+- `load(String key, File file, boolean extract)`：仅当 `extract` 为 true（配置了 `;md5;`）时在创建 `DexClassLoader` 前调用 `extract(file, key)`；未配置 md5 时跳过解压，只加载 dex。
+- `parseJar`：`extract = 存在 ;md5; 且接口原始 scheme 为 http(s)`（在 `assets://` 转换前判定），三个加载分支（md5 命中 / http 下载 / file 本地）都按该标志传递。
+- 新增 `dirKey(jar)`：解压/读取目录名取 `;md5;` 的字面值；未配置 md5 或 md5 是 http 地址时退回 `Crypto.md5(jar)`。
+  `extract()` 与 `file()` 都用同一个 `dirKey`，保证落盘目录与 `jar://` 查找目录一致。
 - 新增 `extract(File, String)`：用 `ZipFile` 遍历条目，只处理 `assets/` 前缀的文件，
   解压到 `cache/jar/<md5>/` 并保留完整条目名；含 zip-slip 前缀校验、条目数/字节上限，
   解压前 `Path.clear(root)` 清理陈旧文件。
@@ -117,7 +126,7 @@ jar 加载时解压到 `cache/jar/<md5(jar)>/`，保留 `assets/` 前缀：
 ## 4. 运行流程
 
 ```
-config.spider (jar URL) ──parseJar──► DexClassLoader + extract(assets/** → cache/jar/<md5>/assets/**)
+config.spider (jar URL) ──parseJar──► DexClassLoader + extract(仅当原始 http(s) 且配置 ;md5;：assets/** → cache/jar/<md5>/assets/**)
                                               │
 site.api = "jar://assets/index.js" ──resolveJar──► file:///.../cache/jar/<md5>/assets/index.js ──► QuickJS
 site.api = "jar://assets/spider.py" ─resolveJar──► file:///.../cache/jar/<md5>/assets/spider.py ──► Chaquopy
@@ -129,6 +138,7 @@ site.api = "csp_XXX" ───────────────────�
 
 ## 5. 安全与限制
 
+- 仅在接口原始 scheme 为 `http(s)://` 且配置了 `;md5;<值>` 时才解压内嵌资源；`file://`、`assets://` 接口或未配置 md5 的 jar 不会产生解压目录。
 - 只解压 `assets/` 前缀条目，保留条目名；含 canonical 路径前缀校验，拒绝 `..` 等越界路径。
 - 限制单 jar 解压条目数（2000）与总字节数（64MB），防止解压炸弹。
 - 每次加载同一 jar 前先清理其解压目录，jar 更新后不会残留旧文件。
@@ -149,8 +159,8 @@ site.api = "csp_XXX" ───────────────────�
   最近一次结果：`BUILD SUCCESSFUL`（app / catvod / quickjs / chaquo 全部通过，含 Python 任务）。
 
 - 建议真机验证：
-  1. 造含 `assets/spider.py`、`assets/index.js`、`assets/demo.json` 的测试 jar。
-  2. 确认解压到 `cache/jar/<md5>/assets/...`，并确认恶意条目 `../evil.py` 未被写出。
+  1. 造含 `assets/spider.py`、`assets/index.js`、`assets/demo.json` 的测试 jar，并在 `spider` 中配置 `;md5;<真实 md5>`。
+  2. 确认解压到 `cache/jar/<md5>/assets/...`，并确认恶意条目 `../evil.py` 未被写出；再用不带 md5、`file://`、`assets://` 三种 jar 分别验证不会解压。
   3. 分别用 `jar://assets/...` 验证 py / js / ext 三种引用。
   4. 回归 `csp_` 与 http 的 `.py` / `.js` 配置行为不变。
 
