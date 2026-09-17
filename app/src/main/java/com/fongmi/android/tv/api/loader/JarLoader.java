@@ -58,10 +58,16 @@ public class JarLoader {
         this.recent = recent;
     }
 
-    private void load(String key, File file) {
+    private static String dirKey(String jar) {
+        String[] texts = jar.split(";md5;");
+        String md5 = texts.length > 1 ? texts[1].trim() : "";
+        return md5.isEmpty() || md5.startsWith("http") ? Crypto.md5(jar) : md5;
+    }
+
+    private void load(String key, File file, boolean extract, String dir) {
         if (Thread.interrupted()) return;
         if (!Path.exists(file) || !file.setReadOnly()) return;
-        extract(file, key);
+        if (extract) extract(file, dir);
         String cachePath = Path.jar().getAbsolutePath();
         DexClassLoader loader = new DexClassLoader(file.getAbsolutePath(), cachePath, cachePath, App.get().getClassLoader());
         invokeInit(loader);
@@ -76,7 +82,7 @@ public class JarLoader {
             if (!name.startsWith(ASSETS)) return null;
             String key = Crypto.md5(jar);
             parseJar(key, jar);
-            File file = new File(new File(Path.jar(), key), name);
+            File file = new File(new File(Path.jar(), dirKey(jar)), name);
             return file.isFile() ? file : null;
         } catch (Throwable e) {
             e.printStackTrace();
@@ -89,8 +95,8 @@ public class JarLoader {
         return file != null ? Path.read(file) : link;
     }
 
-    private void extract(File file, String key) {
-        File root = new File(Path.jar(), key);
+    private void extract(File file, String dir) {
+        File root = new File(Path.jar(), dir);
         Path.clear(root);
         root.mkdirs();
         try (ZipFile zip = new ZipFile(file)) {
@@ -138,20 +144,23 @@ public class JarLoader {
 
     public void parseJar(String key, String jar) {
         if (loaders.containsKey(key)) return;
+        boolean http = jar.startsWith("http");
         if (jar.startsWith("assets")) jar = UrlUtil.convert(jar);
         Object lock = locks.computeIfAbsent(key, k -> new Object());
         synchronized (lock) {
             if (loaders.containsKey(key)) return;
+            String dir = dirKey(jar);
             String[] texts = jar.split(";md5;");
             String md5 = texts.length > 1 ? texts[1].trim() : "";
+            boolean extract = !md5.isEmpty() && http;
             if (md5.startsWith("http")) md5 = OkHttp.string(md5).trim();
             jar = texts[0];
             if (!md5.isEmpty() && Crypto.equals(Path.jar(jar), md5)) {
-                load(key, Path.jar(jar));
+                load(key, Path.jar(jar), extract, dir);
             } else if (jar.startsWith("http")) {
-                load(key, Download.create(jar, Path.jar(jar)).get());
+                load(key, Download.create(jar, Path.jar(jar)).get(), extract, dir);
             } else if (jar.startsWith("file")) {
-                load(key, Path.local(jar));
+                load(key, Path.local(jar), extract, dir);
             }
         }
     }
