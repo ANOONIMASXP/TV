@@ -35,9 +35,11 @@
 - `chaquo/src/main/python/app.py`：`spider()` / `download()` 支持 `file://`，模块名防冲突。
 - `catvod/src/main/java/com/github/catvod/utils/Path.java`：无净改动。
 
-## 待实现（唯一改动）
+## 上一轮改动（已实现）
 
 **目标**：`assets://` 与 `file://` 的 jar 一律不解压，只有用户显式配置的 http(s) 才解压。
+
+状态：已实现并编译通过（`JarLoader.parseJar` 在 assets 转换前用 `boolean http = jar.startsWith("http")`，`extract = !md5.isEmpty() && http`）。
 
 **文件**：`app/src/main/java/com/fongmi/android/tv/api/loader/JarLoader.java` — `parseJar(String key, String jar)`
 
@@ -83,6 +85,128 @@ public void parseJar(String key, String jar) {
    - `assets://test.jar;md5;<值>` → 加载 dex，不解压。
 3. 回归 `csp_` 与 http `.py`/`.js` 配置行为不变。
 
+## 本次任务：Ikanbot.js 图片不显示修复
+
+### 现象
+
+`Ikanbot.js` 返回的 `vod_pic`（豆瓣图床 `img*.doubanio.com`）在 App 列表/详情显示为文字占位，图片不加载。
+
+### 根因
+
+1. 图片加载链路：`ImgUtil.load` → Glide；`OkGlideModule` 用 `OkHttp.client()` 作为 `OkHttpUrlLoader`（`app/.../utils/OkGlideModule.java:29`）。
+2. 该 OkHttp 客户端**没有任何默认 User-Agent/Referer 拦截器**（`catvod/.../net/OkHttp.java:189-196` 只加 request/auth/response 拦截器），默认 UA 为 `okhttp/x`。
+3. 豆瓣图床对非浏览器请求返回 **418**：实测抓取 `https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2933198755.jpg` 得到非 2xx（418）。Glide 遇非 2xx → `onLoadFailed` → 绘制文字占位（`ImgUtil.java:155-169`）。
+4. Ikanbot 页面图片为懒加载：真实地址在 `img[data-src]`，`src` 是 `data:image/svg+xml` 占位；当前 JS 的 `data-src || src` 在 `data-src` 缺失时会把 data 占位当图片。
+
+### 修复方案（改仓库内 `D:\TV-fongmi\docs\Ikanbot.js`）
+
+App 的 `ImgUtil.getUrl` 支持 URL 头后缀：`@Headers=<json>@` / `@Referer=` / `@User-Agent=`（`ImgUtil.java:94-105`）。据此：
+
+1. 新增 `picUrl(url)`：
+   - 空值或 `data:` 开头 → 返回 `''`。
+   - 其它值追加浏览器 UA：`@Headers={"User-Agent":"<UA>"}@`。
+   - host 含 `doubanio.com` 时再加 `Referer: https://movie.douban.com/`。
+2. 在 `vodOf(id, name, pic, remarks)`（`docs/Ikanbot.js:75-82`）内把 `vod_pic: stringValue(pic).trim()` 改为 `vod_pic: picUrl(pic)`——一处集中，自动覆盖 `parseBillboard` / `parseVods` / `parseSearch`。
+3. 三个解析器的图片取值增加 `data-original`：`img.attr('data-src') || img.attr('data-original') || img.attr('src')`；`data:` 占位由 `picUrl` 过滤。
+4. `detail` 的封面（`docs/Ikanbot.js:328`）改为 `vod_pic: picUrl($('meta[property="og:image"]').attr('content'))`。
+
+参考实现：
+
+```js
+const DOUBAN_REFERER = 'https://movie.douban.com/';
+
+function picUrl(url) {
+    const value = stringValue(url).trim();
+    if (!value || value.startsWith('data:')) return '';
+    const headers = { 'User-Agent': UA };
+    if (/doubanio\.com/i.test(value)) headers['Referer'] = DOUBAN_REFERER;
+    return value + '@Headers=' + JSON.stringify(headers) + '@';
+}
+```
+
+- `docs/Ikanbot.js` 已有 `const UA`（第 37 行）与 `stringValue` 辅助函数，直接复用。
+- 无需新增 `imgSrc` 包装：`vodOf` 已集中处理，解析器只需补 `data-original` 回退。
+
+### 关键约束
+
+- `@Headers=` 的 JSON 值内不能含 `@`；当前 UA/Referer 均不含。
+- URL 变长且含 `{`/`"`，但 `UrlUtil.convert` 对 http scheme 原样返回、不会破坏后缀（已确认 `UrlUtil.java:21-28,59-67`）。
+- 带后缀的 `vod_pic` 会写入历史/收藏，显示时由 `ImgUtil.getUrl` 解析，无副作用。
+
+### 验证
+
+1. 先离线确认头是否有效（由实现代理执行）：对同一图片分别用「仅 UA」「仅 Referer」「UA+Referer」请求，确认返回 200；据此决定是否保留 Referer。
+2. 无需 JS 编译；把 `docs/Ikanbot.js` 通过站点 `api`（`file://.../Ikanbot.js`）或 jar `assets/Ikanbot.js` 加载后**冷启动** App（`ImgUtil.failed` 是内存集合，需重启清空）。
+3. 确认首页榜单、分类、搜索、详情海报均显示；`data:` 占位不再被当图片加载。
+4. 回归：非豆瓣图源（如部分搜索结果的 `ynztctv.com`）仅加 UA 仍能显示。
+
+### 备选（若加头仍 418）
+
+- 换用其它浏览器 UA，或补 `Accept`/`Accept-Language` 头。
+- 仍失败则改为经 jar `Proxy` 代理图片（成本高，仅在前者无效时考虑）。
+
+## 本次任务：解压"存在则跳过"（完成标记）
+
+### 目标
+
+仅在 jar 解压目录缺失或 jar 内容变化时解压；否则跳过，避免每次启动/配置重载都 `Path.clear` + 全量解压。
+
+### 方案（已确认）
+
+- 标记文件：`cache/jar/<dirKey>/.extracted`，**内容 = 实际 jar 文件的 md5**（`Crypto.md5(file)`）。
+- `dirKey` 不变（配置里 `;md5;` 的字面值；md5 为 http 时回退 `Crypto.md5(整串)`），因此 `jar://` 映射路径 `cache/jar/<dirKey>/assets/...` **不变**。
+- 跳过判定与标记都放在 `extract(File, String)` 内，`load`/`parseJar`/`file` 不改。
+
+### 改动点
+
+文件：`app/src/main/java/com/fongmi/android/tv/api/loader/JarLoader.java`
+
+1. 新增常量：`private static final String MARKER = ".extracted";`
+2. 改 `extract(File file, String dir)`（当前 `:98-122`）：
+   ```java
+   private void extract(File file, String dir) {
+       File root = new File(Path.jar(), dir);
+       String md5 = Crypto.md5(file);
+       File marker = new File(root, MARKER);
+       if (!md5.isEmpty() && md5.equalsIgnoreCase(Path.read(marker).trim())) return; // 已解压且内容一致 → 跳过
+       Path.clear(root);
+       root.mkdirs();
+       try (ZipFile zip = new ZipFile(file)) {
+           // ...现有 assets/** 解压逻辑与 MAX_ENTRIES/MAX_BYTES 上限保持不变...
+           if (!md5.isEmpty()) Path.write(marker, md5.getBytes(StandardCharsets.UTF_8)); // 成功后才写标记
+       } catch (Throwable e) {
+           e.printStackTrace();
+           Path.clear(root); // 失败清除半成品，避免残留
+       }
+   }
+   ```
+3. 需要 `import java.nio.charset.StandardCharsets;`（`Path.read(File)`/`Path.write(File, byte[])`/`Path.clear` 均已存在：`Path.java:162,206,281`）。
+
+### 行为
+
+- 首次：目录不存在 → 解压 → 写标记。
+- 后续启动/重载：标记存在且等于当前 jar 文件 md5 → 跳过（不 clear、不写盘）。
+- jar 变化（md5 变）→ 标记不匹配 → clear + 重解压 + 写新标记。
+- 半解压（无标记）或标记为空/md5 计算失败 → 不跳过、重解压（安全）。
+- 仅 `extract==true`（接口原始 scheme 为 http 且配置了 `;md5;`）时触发；`file://`/`assets://`/无 md5 不受影响。
+- `extract` 在 `parseJar` 的 `synchronized(lock)` 内调用，已串行化。
+
+### 风险 / 边界
+
+- 每次启动会对 jar 文件做一次全量 md5（I/O），通常远小于解压成本。
+- 因 `MAX_ENTRIES`/`MAX_BYTES` 上限而 `break` 时仍写标记；上限对同一 jar 是确定性的，跳过安全。
+- 若外部只删除 `assets/` 却保留 `.extracted`，会误跳过；正常路径 `Path.clear(root)` 会整体删除。如需更保守，可在跳过条件追加 `new File(root, ASSETS).exists()`（代价：不含 `assets/` 的 jar 每次都会重解压）。
+
+### 验证
+
+1. 编译：`.\gradlew.bat :app:compileLeanbackDebugJavaWithJavac`。
+2. 配置 http + `;md5;` jar，冷启动一次 → 确认 `cache/jar/<md5>/.extracted` 存在且内容 == jar 文件 md5。
+3. 再次冷启动 → 确认未重新解压（目录/文件 mtime 不变）。
+4. 更换 jar 内容并更新配置 md5 → 确认重解压且标记更新。
+5. 手动删除 `.extracted`（保留 `assets/`）→ 确认重解压。
+6. 边界：手动删 `assets/` 下某文件但保留 `.extracted` → 不会自动修复（已知）。
+
 ## 需切换到实现代理
 
-上述 `JarLoader.parseJar` 为源码改动，需切换到可编辑代码的代理执行；本代理仅规划。
+- 本次任务（`JarLoader.extract` 完成标记）为源码改动，需切换到可编辑代码的代理执行；本代理仅规划。
+- 历史任务状态：`JarLoader` 解压/`jar://`/`file://`、`assets://` 不解压、`docs/Ikanbot.js` 图片头修复均已实现并通过编译/仿真验证，无需再动。

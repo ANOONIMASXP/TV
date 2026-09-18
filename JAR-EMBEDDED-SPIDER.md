@@ -78,8 +78,9 @@ jar 加载时解压到 `cache/jar/<md5>/`，其中 `<md5>` 就是配置 `;md5;` 
 - 新增 `dirKey(jar)`：解压/读取目录名取 `;md5;` 的字面值；未配置 md5 或 md5 是 http 地址时退回 `Crypto.md5(jar)`。
   `extract()` 与 `file()` 都用同一个 `dirKey`，保证落盘目录与 `jar://` 查找目录一致。
 - 新增 `extract(File, String)`：用 `ZipFile` 遍历条目，只处理 `assets/` 前缀的文件，
-  解压到 `cache/jar/<md5>/` 并保留完整条目名；含 zip-slip 前缀校验、条目数/字节上限，
-  解压前 `Path.clear(root)` 清理陈旧文件。
+  解压到 `cache/jar/<md5>/` 并保留完整条目名；含 zip-slip 前缀校验、条目数/字节上限。
+  解压成功后写入完成标记 `cache/jar/<md5>/.extracted`（内容为实际 jar 文件的 md5）；
+  再次加载时若标记匹配则**跳过解压**，仅在目录缺失/标记不匹配时 `Path.clear(root)` 重解压。
 - 新增 `file(String link, String jar)`：把 `jar://assets/xxx` 映射为
   `cache/jar/<md5>/assets/xxx`，存在则返回文件，否则返回 null。
 - 新增 `ext(String link, String jar)`：用 `file()` 定位后读取文本内容返回；找不到则原样返回。
@@ -141,7 +142,7 @@ site.api = "csp_XXX" ───────────────────�
 - 仅在接口原始 scheme 为 `http(s)://` 且配置了 `;md5;<值>` 时才解压内嵌资源；`file://`、`assets://` 接口或未配置 md5 的 jar 不会产生解压目录。
 - 只解压 `assets/` 前缀条目，保留条目名；含 canonical 路径前缀校验，拒绝 `..` 等越界路径。
 - 限制单 jar 解压条目数（2000）与总字节数（64MB），防止解压炸弹。
-- 每次加载同一 jar 前先清理其解压目录，jar 更新后不会残留旧文件。
+- 完成标记 `.extracted` 在解压成功后才写入，可避免半解压目录被误判为已完成；jar 内容变化（md5 变）或标记缺失时才清理并重解压，避免每次启动都重复 I/O。
 - `jar://` 必须带 `.py` / `.js` 后缀才能被识别并路由；`ext` 必须带 `assets/` 前缀。
 - 资源型 jar（无 `classes.dex`）可用：`invokeInit` / `invokeProxy` / JS `createFun` 均已容错。
 - 缓存清理：`JarLoader.clear()` 只清内存实例，不清解压文件；解压目录随后续加载覆盖或系统清缓存。
