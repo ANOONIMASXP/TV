@@ -15,6 +15,7 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -29,6 +30,7 @@ import dalvik.system.DexClassLoader;
 public class JarLoader {
 
     private static final String ASSETS = "assets/";
+    private static final String MARKER = ".extracted";
     private static final int MAX_ENTRIES = 2000;
     private static final long MAX_BYTES = 64L * 1024 * 1024;
 
@@ -97,6 +99,9 @@ public class JarLoader {
 
     private void extract(File file, String dir) {
         File root = new File(Path.jar(), dir);
+        String md5 = Crypto.md5(file);
+        File marker = new File(root, MARKER);
+        if (!md5.isEmpty() && md5.equalsIgnoreCase(Path.read(marker).trim())) return;
         Path.clear(root);
         root.mkdirs();
         try (ZipFile zip = new ZipFile(file)) {
@@ -117,8 +122,10 @@ public class JarLoader {
                 if (total > MAX_BYTES) break;
                 Path.copy(zip.getInputStream(entry), out);
             }
+            if (!md5.isEmpty()) Path.write(marker, md5.getBytes(StandardCharsets.UTF_8));
         } catch (Throwable e) {
             e.printStackTrace();
+            Path.clear(root);
         }
     }
 
