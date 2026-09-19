@@ -30,7 +30,7 @@ import dalvik.system.DexClassLoader;
 public class JarLoader {
 
     private static final String ASSETS = "assets/";
-    private static final String MARKER = ".extracted";
+    private static final String VERSION = "version";
     private static final int MAX_ENTRIES = 2000;
     private static final long MAX_BYTES = 64L * 1024 * 1024;
 
@@ -60,16 +60,10 @@ public class JarLoader {
         this.recent = recent;
     }
 
-    private static String dirKey(String jar) {
-        String[] texts = jar.split(";md5;");
-        String md5 = texts.length > 1 ? texts[1].trim() : "";
-        return md5.isEmpty() || md5.startsWith("http") ? Crypto.md5(jar) : md5;
-    }
-
-    private void load(String key, File file, boolean extract, String dir) {
+    private void load(String key, File file, boolean extract) {
         if (Thread.interrupted()) return;
         if (!Path.exists(file) || !file.setReadOnly()) return;
-        if (extract) extract(file, dir);
+        if (extract) extract(file);
         String cachePath = Path.jar().getAbsolutePath();
         DexClassLoader loader = new DexClassLoader(file.getAbsolutePath(), cachePath, cachePath, App.get().getClassLoader());
         invokeInit(loader);
@@ -84,7 +78,7 @@ public class JarLoader {
             if (!name.startsWith(ASSETS)) return null;
             String key = Crypto.md5(jar);
             parseJar(key, jar);
-            File file = new File(new File(Path.jar(), dirKey(jar)), name);
+            File file = new File(new File(Path.jar(), Crypto.md5(url(jar))), name);
             return file.isFile() ? file : null;
         } catch (Throwable e) {
             e.printStackTrace();
@@ -92,40 +86,48 @@ public class JarLoader {
         }
     }
 
+    private static String url(String jar) {
+        if (jar.startsWith("assets")) jar = UrlUtil.convert(jar);
+        return jar.split(";md5;")[0];
+    }
+
     public String ext(String link, String jar) {
         File file = file(link, jar);
         return file != null ? Path.read(file) : link;
     }
 
-    private void extract(File file, String dir) {
-        File root = new File(Path.jar(), dir);
-        String md5 = Crypto.md5(file);
-        File marker = new File(root, MARKER);
-        if (!md5.isEmpty() && md5.equalsIgnoreCase(Path.read(marker).trim())) return;
-        Path.clear(root);
-        root.mkdirs();
+    private void extract(File file) {
+        String name = file.getName();
+        String key = name.endsWith(".jar") ? name.substring(0, name.length() - 4) : Crypto.md5(file.getAbsolutePath());
+        File dir = new File(Path.jar(), key);
+        File marker = new File(dir, ASSETS + VERSION);
         try (ZipFile zip = new ZipFile(file)) {
-            String base = root.getCanonicalPath() + File.separator;
+            ZipEntry entry = zip.getEntry(ASSETS + VERSION);
+            if (entry == null || entry.isDirectory()) return;
+            String version = Path.read(zip.getInputStream(entry)).trim();
+            if (version.isEmpty() || version.equals(Path.read(marker).trim())) return;
+            Path.clear(dir);
+            dir.mkdirs();
+            String base = dir.getCanonicalPath() + File.separator;
             int count = 0;
             long total = 0;
             Enumeration<? extends ZipEntry> entries = zip.entries();
             while (entries.hasMoreElements()) {
-                ZipEntry entry = entries.nextElement();
-                if (entry.isDirectory()) continue;
-                String name = entry.getName();
-                if (!name.startsWith(ASSETS)) continue;
-                File out = new File(root, name);
+                ZipEntry e = entries.nextElement();
+                if (e.isDirectory()) continue;
+                String n = e.getName();
+                if (!n.startsWith(ASSETS) || n.equals(ASSETS + VERSION)) continue;
+                File out = new File(dir, n);
                 if (!out.getCanonicalPath().startsWith(base)) continue;
                 if (++count > MAX_ENTRIES) break;
-                long size = entry.getSize();
+                long size = e.getSize();
                 if (size > 0) total += size;
                 if (total > MAX_BYTES) break;
-                Path.copy(zip.getInputStream(entry), out);
+                Path.copy(zip.getInputStream(e), out);
             }
-            if (!md5.isEmpty()) Path.write(marker, md5.getBytes(StandardCharsets.UTF_8));
+            Path.write(marker, version.getBytes(StandardCharsets.UTF_8));
         } catch (Throwable e) {
             e.printStackTrace();
-            Path.clear(root);
         }
     }
 
@@ -156,18 +158,17 @@ public class JarLoader {
         Object lock = locks.computeIfAbsent(key, k -> new Object());
         synchronized (lock) {
             if (loaders.containsKey(key)) return;
-            String dir = dirKey(jar);
             String[] texts = jar.split(";md5;");
             String md5 = texts.length > 1 ? texts[1].trim() : "";
             boolean extract = !md5.isEmpty() && http;
             if (md5.startsWith("http")) md5 = OkHttp.string(md5).trim();
             jar = texts[0];
             if (!md5.isEmpty() && Crypto.equals(Path.jar(jar), md5)) {
-                load(key, Path.jar(jar), extract, dir);
+                load(key, Path.jar(jar), extract);
             } else if (jar.startsWith("http")) {
-                load(key, Download.create(jar, Path.jar(jar)).get(), extract, dir);
+                load(key, Download.create(jar, Path.jar(jar)).get(), extract);
             } else if (jar.startsWith("file")) {
-                load(key, Path.local(jar), extract, dir);
+                load(key, Path.local(jar), extract);
             }
         }
     }
