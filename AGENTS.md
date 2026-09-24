@@ -43,9 +43,10 @@
 - 权限声明（`app/src/main/AndroidManifest.xml`）：`MANAGE_EXTERNAL_STORAGE`（Android 11+）、`WRITE_EXTERNAL_STORAGE(maxSdkVersion=29)`、`requestLegacyExternalStorage=true`。
 - 授权引导（`app/src/main/java/com/fongmi/android/tv/utils/PermissionUtil.java`）：
   - `requestFile(activity, callback)`：用户触发文件操作时请求（Android 11+ 跳系统「所有文件访问」设置页，**无法静默授予**；10 及以下走运行时权限）。
-  - `requestFileAuto(activity, callback)`：**启动时一次性引导**；用 `Prefers` 键 `permission_file_asked` 记录，避免反复弹设置页。
-  - `canUseExternalStorage()`：Android R+ 看 `Environment.isExternalStorageManager()`，R 以下看 `WRITE_EXTERNAL_STORAGE` 是否授予。
-- 无外部权限时功能需**回退内部存储**，不能阻塞加载。
+  - `hasFilePermission` / `canRequestAllFiles`：判定当前是否已获授权。
+- 外部目录（`/sdcard/TV` 等）上的功能（备份/字体/mpv 等）在需要时才请求权限，不能静默获取，也不能阻塞加载。
+
+> jar 本体缓存与解压资源**都在内部存储** `cache/jar`，不依赖外部权限（见第 3 节）。曾尝试把解压资源放外部并启动引导权限，已回退。
 
 ---
 
@@ -68,8 +69,8 @@
 
 ### 3.2 jar 本体缓存与更新判断
 
-- **缓存命名**：jar 本体存为 `md5(jar URL 字符串) + ".jar"`（`Path.jar(url, external)`）。这个哈希是 **URL 字符串**的 `Crypto.md5(String)`，**不是**配置 `;md5;` 值，也不是 jar 内容 md5。每个 URL 固定一个缓存槽，升级覆盖、不按版本堆积。
-- **位置**：外部优先 `/sdcard/TV/jar/<md5(URL)>.jar`；无外部权限回退 `cache/jar/<md5(URL)>.jar`。
+- **缓存命名**：jar 本体存为 `md5(jar URL 字符串) + ".jar"`（`Path.jar(url)`）。这个哈希是 **URL 字符串**的 `Crypto.md5(String)`，**不是**配置 `;md5;` 值，也不是 jar 内容 md5。每个 URL 固定一个缓存槽，升级覆盖、不按版本堆积。
+- **位置**：`cache/jar/<md5(URL)>.jar`（内部存储；`Path.jar(url)`）。
 - **更新判断（内容校验，不靠文件名）**：`Crypto.equals(cachedFile, 配置md5)`（内部对缓存文件实际算 md5）与解析后的配置 `;md5;` 比对：
   - 相等 → 缓存命中，直接用，不联网；
   - 不相等 / 文件不存在 → 从 URL 重新下载覆盖。
@@ -78,14 +79,14 @@
 
 ### 3.3 解压与落盘
 
-- **目录（按 jar 隔离）**：外部 `/sdcard/TV/jar/<md5(URL)>/assets/...`；无外部权限回退 `cache/jar/<md5(URL)>/assets/...`。保留 jar 内 `assets/` 前缀。
+- **目录（按 jar 隔离）**：解压到内部 `cache/jar/<md5(URL)>/assets/...`，保留 jar 内 `assets/` 前缀。
 - **版本文件驱动更新**：jar 内提供 `assets/version`（作者维护，内容为版本号字符串）。
   - 读 jar 内 `assets/version` 与缓存侧 `.../assets/version` 对比：
     - 不相等（或缓存缺失）→ `Path.clear` 该 jar 目录 → 解压覆盖 → **最后**写入版本文件；
     - 相等 → 跳过；
     - jar 内无 `assets/version`（或内容为空）→ **不解压、不建目录**。
 - 解压时**跳过** zip 内的 `assets/version` 条目，拷贝循环结束后再写该文件，保证中途失败可重试。
-- **DexClassLoader 优化目录**：用内部 `Path.dex()`（`cache/dex`），不放外部（外部存储 noexec/FUSE 不可靠）。
+- **DexClassLoader 优化目录**：用内部 `Path.jar()`（`cache/jar`）。
 - **流程顺序（重要）**：解压必须在「jar 本体缓存与更新判断」**之后**。`parseJar` 先按 `;md5;` 确定 jar 本体（缓存命中 / 重新下载覆盖），再在 `load` 内 `extract(file)`；`extract` 读取的 `assets/version` 来自这个最终 jar。`file()` 同样是「先 `parseJar`（含解压）再拼路径」。
 
 ### 3.4 配置示例
@@ -142,14 +143,13 @@
 ### 3.6 运行流程
 
 ```
-config.spider (jar URL) ──parseJar──► 先按 ;md5; 决定 jar 本体（缓存命中 / 重新下载覆盖 <jarDir>/<md5(URL)>.jar）
-                                              │  <jarDir> = /sdcard/TV/jar（有外部权限）或 cache/jar（回退）
+config.spider (jar URL) ──parseJar──► 先按 ;md5; 决定 jar 本体（缓存命中 / 重新下载覆盖 cache/jar/<md5(URL)>.jar）
                                               │  再随后解压（仅当原始 http(s) + 配置 ;md5; + jar 内有 assets/version）：
-                                              │  assets/** → <jarDir>/<md5(URL)>/assets/**，版本记录 assets/version
+                                              │  assets/** → cache/jar/<md5(URL)>/assets/**，版本记录 assets/version
                                               ▼
-site.api = "jar://assets/index.js" ──resolveJar──► file:///.../<jarDir>/<md5(URL)>/assets/index.js ──► QuickJS
-site.api = "jar://assets/spider.py" ─resolveJar──► file:///.../<jarDir>/<md5(URL)>/assets/spider.py ──► Chaquopy
-site.ext = "jar://assets/demo.json" ──ext────────► 读取 <jarDir>/<md5(URL)>/assets/demo.json 内容作为 extend
+site.api = "jar://assets/index.js" ──resolveJar──► file:///.../cache/jar/<md5(URL)>/assets/index.js ──► QuickJS
+site.api = "jar://assets/spider.py" ─resolveJar──► file:///.../cache/jar/<md5(URL)>/assets/spider.py ──► Chaquopy
+site.ext = "jar://assets/demo.json" ──ext────────► 读取 cache/jar/<md5(URL)>/assets/demo.json 内容作为 extend
 LiveConfig lives[].url = "jar://assets/live.txt" ──LiveParser.getText──► 读取文本解析频道
 site.api = "csp_XXX" ────────────────────────────► 反射实例化 dex 内 com.github.catvod.spider.XXX（不变）
 ```
@@ -157,6 +157,7 @@ site.api = "csp_XXX" ───────────────────�
 ### 3.7 安全与限制
 
 - 仅在「原始 scheme 为 `http(s)://` + 配置 `;md5;<值>` + jar 内提供 `assets/version`」时解压；否则不产生解压文件。
+- jar 本体与解压资源都在内部 `cache/jar`，不依赖外部存储权限。
 - 只解压 `assets/` 前缀条目，保留前缀落到按 jar 隔离的目录；含 canonical 路径前缀校验，拒绝 `..` 等越界路径。
 - **版本文件门槛**：无 `assets/version`（或空）不执行任何解压动作（不建目录、不拷贝、不写记录）。
 - 限制单 jar 解压条目数（`MAX_ENTRIES = 2000`）与总字节数（`MAX_BYTES = 64MB`），防解压炸弹。
@@ -201,26 +202,25 @@ site.api = "csp_XXX" ───────────────────�
 ## 5. 经验与坑（lessons）
 
 - **单共享标记的教训**：曾用「所有 jar 共用 `cache/jar/assets/` + 一个 `.md5` 标记」，多个带 `;md5;` 的 jar 会互相覆盖标记 → 反复重解压。现改为**按 jar 隔离目录 + `assets/version` 版本文件**。
-- **`File.setReadOnly()` 在外部存储可能返回 false**（FUSE/sdcardfs），不能作为加载门槛；`JarLoader.load` 已放宽为只校验文件存在，`setReadOnly()` 仅尽力而为。
 - **`Path.copy` / `Path.write` 静默吞 IOException**（返回 void/原 file），可能表面成功但文件缺失；排查问题时留意。
 - **版本比较是字符串不等**：作者每次更新 assets 必须改 `assets/version` 内容，否则不会重解压；仅改代码不改版本号无效。
 - **jar 本体命名用 URL 的 md5**（每 URL 一个缓存槽，升级覆盖不堆积）；配置 `;md5;` 只用于内容校验与下载判断。
 - **`assets://`** 是 APK 自身 assets 的虚拟地址（经本地 http 中转），原始 scheme 非 http，因此不解压。
 - **`assets/version` 既是被解压的资源也是版本标记**；解压时跳过它、最后写入，避免半解压被误判完成。
-- 外部写入需权限：Android 11+ 只能引导用户到系统设置开启「所有文件访问」，无法静默获取；启动用 `requestFileAuto` 引导一次，拒绝则回退内部。
+- **外部存储不用于 jar**：曾尝试把解压资源放 `/sdcard/TV/jar` 并在启动引导「所有文件访问」权限，因权限需手动授予、路径随权限变化等已回退；jar 本体与解压资源统一留在内部 `cache/jar`。
 - Gradle 构建脚本是 `app/build.gradle`（Groovy），不是 `.kts`；`kilo.json`/`.kilo` 为本项目 AI 配置目录（已 gitignore）。
 
 ---
 
 ## 6. 关键文件清单
 
-- `app/.../api/loader/JarLoader.java`：jar 本体缓存/下载判断、`extract`（版本文件驱动、按 jar 隔离、外部优先回退内部）、`file()`/`ext()` 的 `jar://` → 路径映射、`Path.dex()` 优化目录。
+- `app/.../api/loader/JarLoader.java`：jar 本体缓存/下载判断、`extract`（版本文件驱动、按 jar 隔离、解压到内部 `cache/jar`）、`file()`/`ext()` 的 `jar://` → 路径映射、`Path.jar()` 优化目录。
 - `app/.../api/loader/BaseLoader.java`：`resolveJar`、公开 `ext`、`csp/js/py` 路由。
-- `catvod/.../utils/Path.java`：`cache()/files()/tv()/jar(boolean)/jar(String,boolean)/dex()` 等路径工具；`Crypto`、`OkHttp`。
+- `catvod/.../utils/Path.java`：`cache()/files()/tv()/jar()/jar(String)` 等路径工具；`Crypto`、`OkHttp`。其中 `jar()`=内部 `cache/jar` 目录，`jar(String)`=内部 jar 本体文件。
 - `app/.../bean/Site.java`：`fetchExt()` 的 `jar://`。
 - `app/.../api/parser/LiveParser.java`：`getText(Live)` 的 `jar://`。
 - `quickjs/.../utils/Module.java`、`chaquo/src/main/python/app.py`：脚本 `file://` 加载。
-- `app/.../utils/PermissionUtil.java`、`app/src/{mobile,leanback}/.../HomeActivity.java`：存储权限与启动引导。
+- `app/.../utils/PermissionUtil.java`、`app/src/{mobile,leanback}/.../HomeActivity.java`：存储权限（外部目录功能使用）。
 - `app/.../utils/ImgUtil.java`：图片 URL 头后缀解析。
 - `AGENTS.md`：本文件。
 
@@ -230,14 +230,14 @@ site.api = "csp_XXX" ───────────────────�
 
 1. 构建（见第 0 节）应 `BUILD SUCCESSFUL`。
 2. 造含 `assets/version`（如 `1`）+ `assets/spider.py` / `assets/index.js` / `assets/demo.json` 的 jar，配置 `;md5;<真实 md5>`：
-   - 有外部权限：解压到 `/sdcard/TV/jar/<md5(URL)>/assets/...`，文件管理器可见；版本文件内容与 jar 内一致。
-   - 无外部权限（拒绝）：回退 `cache/jar/<md5(URL)>/assets/...`，功能不中断。
+   - jar 本体始终落到内部 `cache/jar/<md5(URL)>.jar`。
+   - 解压 assets 到内部 `cache/jar/<md5(URL)>/assets/...`；版本文件内容与 jar 内一致。
 3. 版本未变再次加载：跳过解压；把 `assets/version` 改成 `2` 并更新 `;md5;` 后加载：`Path.clear` 后重解压、旧版本删除的条目不再存在，其它 jar 不受影响。
 4. jar 内无 `assets/version`（或空）：不建目录、不解压。
 5. `jar://assets/*.py` / `*.js` / `ext` 与 LiveConfig live `url=jar://...` 回归。
 6. 恶意条目 `../evil.py` 被拒；`MAX_ENTRIES` / `MAX_BYTES` 生效。
 7. 非 http、未配置 `;md5;` 的 jar 不解压；`csp_` 与 http 的 `.py`/`.js` 行为不变。
-8. `DexClassLoader` 优化目录在内部 `cache/dex`。
+8. `DexClassLoader` 优化目录在内部 `cache/jar`，jar 能正常 `csp_` 加载。
 
 ---
 
@@ -247,5 +247,5 @@ site.api = "csp_XXX" ───────────────────�
 2. 解压框架演进：共享目录 + `.md5` 标记 → **按 jar 隔离目录 + `assets/version` 版本文件**（弃用 md5 标记）。
 3. 曾新增「解压前 assets 预检」，后因版本文件门槛已覆盖而移除。
 4. `LiveConfig` 的 live `url`（`lives[].url`）支持 `jar://`。
-5. jar 缓存与解压改到外部 `/sdcard/TV/jar`（启动一次性权限引导 + 无权限回退内部）；`DexClassLoader` 优化目录内部化（`Path.dex()`）；放宽 `setReadOnly()` 门槛。
+5. jar 本体与解压资源统一留在内部 `cache/jar`（`cache/jar/<md5(URL)>.jar`、`cache/jar/<md5(URL)>/assets/...`），不依赖外部存储权限。曾短暂改为「本体内部 + 解压资源外置 `/sdcard/TV/jar` + 启动权限引导」，随后**已回退**为全部内部。
 6. `Ikanbot.js` 豆瓣图片 Referer 修复；`ImgUtil` 头后缀支持。

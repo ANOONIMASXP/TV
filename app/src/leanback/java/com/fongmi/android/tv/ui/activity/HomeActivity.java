@@ -126,7 +126,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         setRecyclerView();
         setViewModel();
         setAdapter();
-        PermissionUtil.requestFileAuto(this, granted -> initConfig());
+        initConfig();
         setTitle();
         setLogo();
     }
