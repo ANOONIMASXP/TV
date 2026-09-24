@@ -2,15 +2,19 @@ package com.fongmi.android.tv.utils;
 
 import android.Manifest;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.Settings;
 
+import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentActivity;
 
+import com.fongmi.android.tv.App;
 import com.fongmi.android.tv.impl.PermissionCallback;
+import com.github.catvod.utils.Prefers;
 import com.permissionx.guolindev.PermissionMediator;
 import com.permissionx.guolindev.PermissionX;
 
@@ -34,6 +38,21 @@ public class PermissionUtil {
         boolean requestAllFiles = canRequestAllFiles(activity);
         if (hasFilePermission(activity, requestAllFiles)) callback.accept(true);
         else post(fragment, () -> requestFile(PermissionX.init(fragment), requestAllFiles, callback));
+    }
+
+    public static void requestFileAuto(FragmentActivity activity, Consumer<Boolean> callback) {
+        boolean granted = hasFilePermission(activity, canRequestAllFiles(activity));
+        if (granted || Prefers.getBoolean("permission_file_asked")) {
+            callback.accept(granted);
+            return;
+        }
+        Prefers.put("permission_file_asked", true);
+        requestFile(activity, callback);
+    }
+
+    public static boolean canUseExternalStorage() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) return Environment.isExternalStorageManager();
+        return ContextCompat.checkSelfPermission(App.get(), Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
     }
 
     public static void requestNotify(FragmentActivity activity) {

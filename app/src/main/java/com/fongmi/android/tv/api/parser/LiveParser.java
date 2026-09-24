@@ -2,6 +2,7 @@ package com.fongmi.android.tv.api.parser;
 
 import androidx.media3.common.MimeTypes;
 
+import com.fongmi.android.tv.api.loader.BaseLoader;
 import com.fongmi.android.tv.bean.Catchup;
 import com.fongmi.android.tv.bean.Channel;
 import com.fongmi.android.tv.bean.ClearKey;
@@ -54,6 +55,11 @@ public class LiveParser {
 
     private static String getText(Live live) throws Exception {
         if (!live.getApi().isEmpty()) return live.spider().liveContent(live.getUrl());
+        if (live.getUrl().startsWith("jar://")) {
+            String text = BaseLoader.get().ext(live.getUrl(), live.getJar());
+            if (text.equals(live.getUrl())) throw new Exception("Jar resource not found: " + live.getUrl());
+            return text;
+        }
         return OkHttp.string(UrlUtil.convert(live.getUrl()), live.getHeaders());
     }
 
