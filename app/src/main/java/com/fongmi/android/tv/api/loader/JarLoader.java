@@ -4,7 +4,6 @@ import android.content.Context;
 
 import com.fongmi.android.tv.App;
 import com.fongmi.android.tv.utils.Download;
-import com.fongmi.android.tv.utils.PermissionUtil;
 import com.fongmi.android.tv.utils.UrlUtil;
 import com.github.catvod.crawler.Spider;
 import com.github.catvod.crawler.SpiderNull;
@@ -63,10 +62,9 @@ public class JarLoader {
 
     private void load(String key, File file, boolean extract) {
         if (Thread.interrupted()) return;
-        if (!Path.exists(file)) return;
-        file.setReadOnly();
+        if (!Path.exists(file) || !file.setReadOnly()) return;
         if (extract) extract(file);
-        String cachePath = Path.dex().getAbsolutePath();
+        String cachePath = Path.jar().getAbsolutePath();
         DexClassLoader loader = new DexClassLoader(file.getAbsolutePath(), cachePath, cachePath, App.get().getClassLoader());
         invokeInit(loader);
         invokeProxy(key, loader);
@@ -80,7 +78,7 @@ public class JarLoader {
             if (!name.startsWith(ASSETS)) return null;
             String key = Crypto.md5(jar);
             parseJar(key, jar);
-            File file = new File(new File(Path.jar(PermissionUtil.canUseExternalStorage()), Crypto.md5(url(jar))), name);
+            File file = new File(new File(Path.jar(), Crypto.md5(url(jar))), name);
             return file.isFile() ? file : null;
         } catch (Throwable e) {
             e.printStackTrace();
@@ -101,7 +99,7 @@ public class JarLoader {
     private void extract(File file) {
         String name = file.getName();
         String key = name.endsWith(".jar") ? name.substring(0, name.length() - 4) : Crypto.md5(file.getAbsolutePath());
-        File dir = new File(Path.jar(PermissionUtil.canUseExternalStorage()), key);
+        File dir = new File(Path.jar(), key);
         File marker = new File(dir, ASSETS + VERSION);
         try (ZipFile zip = new ZipFile(file)) {
             ZipEntry entry = zip.getEntry(ASSETS + VERSION);
@@ -165,11 +163,10 @@ public class JarLoader {
             boolean extract = !md5.isEmpty() && http;
             if (md5.startsWith("http")) md5 = OkHttp.string(md5).trim();
             jar = texts[0];
-            boolean external = PermissionUtil.canUseExternalStorage();
-            if (!md5.isEmpty() && Crypto.equals(Path.jar(jar, external), md5)) {
-                load(key, Path.jar(jar, external), extract);
+            if (!md5.isEmpty() && Crypto.equals(Path.jar(jar), md5)) {
+                load(key, Path.jar(jar), extract);
             } else if (jar.startsWith("http")) {
-                load(key, Download.create(jar, Path.jar(jar, external)).get(), extract);
+                load(key, Download.create(jar, Path.jar(jar)).get(), extract);
             } else if (jar.startsWith("file")) {
                 load(key, Path.local(jar), extract);
             }
