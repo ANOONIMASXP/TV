@@ -85,8 +85,12 @@ public class Path {
         return mkdir(new File(cache(), "py"));
     }
 
-    public static File jar() {
-        return mkdir(new File(cache(), "jar"));
+    public static File dex() {
+        return mkdir(new File(cache(), "dex"));
+    }
+
+    public static File jar(boolean external) {
+        return external ? mkdir(new File(tv(), "jar")) : mkdir(new File(cache(), "jar"));
     }
 
     public static File exoCache() {
@@ -145,8 +149,8 @@ public class Path {
         return new File(py(), name);
     }
 
-    public static File jar(String name) {
-        return new File(jar(), Crypto.md5(name).concat(".jar"));
+    public static File jar(String name, boolean external) {
+        return new File(jar(external), Crypto.md5(name).concat(".jar"));
     }
 
     public static File thunder(String name) {
