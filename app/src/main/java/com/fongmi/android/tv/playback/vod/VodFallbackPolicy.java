@@ -58,6 +58,7 @@ class VodFallbackPolicy {
     }
 
     private void fallbackToNextLineOrSource() {
+        if (host.isHostFinishing()) return;
         if (!host.isSiteChangeable()) return;
         if (fallbackToNextLine()) return;
         fallbackToNextSource(false);

@@ -213,7 +213,11 @@ public class PlaybackService extends MediaLibraryService implements MediaLibrary
     }
 
     private void tryShutdown() {
-        if (!hasNavigationCallback() && !hasMediaClient()) shutdown();
+        if (hasNavigationCallback() || hasMediaClient()) return;
+        App.post(() -> {
+            if (hasNavigationCallback() || hasMediaClient()) return;
+            shutdown();
+        }, 250);
     }
 
     private void releaseBrowser() {

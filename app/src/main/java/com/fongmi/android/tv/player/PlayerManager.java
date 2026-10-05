@@ -62,6 +62,7 @@ public class PlayerManager implements ParseCallback {
     private long pendingStartPositionMs;
     private boolean danmakuEnabled;
     private boolean initTrack;
+    private boolean stopping;
     private int retry;
     private int decode;
 
@@ -78,6 +79,7 @@ public class PlayerManager implements ParseCallback {
     }
 
     public void release() {
+        stopping = true;
         App.removeCallbacks(runnable);
         if (player != null) player.removeListener(listener);
         if (engine != null) engine.release();
@@ -392,6 +394,8 @@ public class PlayerManager implements ParseCallback {
     }
 
     public void stop() {
+        stopping = true;
+        App.removeCallbacks(runnable);
         engine.stop();
         stopParse();
     }
@@ -486,6 +490,7 @@ public class PlayerManager implements ParseCallback {
     }
 
     private void onPlayTimeout() {
+        if (stopping) return;
         callback.onError(ResUtil.getString(R.string.error_play_timeout));
         stop();
     }
@@ -534,6 +539,7 @@ public class PlayerManager implements ParseCallback {
 
     private void setMediaItem(long timeout, long startPositionMs) {
         if (spec == null || spec.getUrl() == null) return;
+        stopping = false;
         ensureEngine(spec.checkUa());
         pendingPreload = null;
         initTrack = false;
@@ -674,7 +680,7 @@ public class PlayerManager implements ParseCallback {
 
         @Override
         public void onPlayerError(@NonNull PlaybackException e) {
-            if (spec == null) return;
+            if (spec == null || stopping) return;
             PlayerEngine.ErrorAction action = engine.handleError(e);
             if (action != PlayerEngine.ErrorAction.RECOVERED) App.removeCallbacks(runnable);
             switch (action) {

@@ -29,6 +29,7 @@ import androidx.media3.ui.PlayerView;
 import androidx.media3.ui.TimeBar;
 import androidx.media3.ui.danmaku.DanmakuConfig;
 
+import com.fongmi.android.tv.App;
 import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.bean.Result;
 import com.fongmi.android.tv.playback.PlaybackIntent;
@@ -435,7 +436,14 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
         mService.removePlayerCallback(mPlayerCallback);
         if (!mService.releaseBinding(getNavigationCallback())) return;
         if (shouldKeepServiceAlive()) keepServiceAlive(playbackOwner);
-        else mService.shutdown();
+        else deferShutdown(mService);
+    }
+
+    private void deferShutdown(PlaybackService service) {
+        App.post(() -> {
+            if (service.hasPlayerCallback() || service.hasMediaClient()) return;
+            service.shutdown();
+        }, 250);
     }
 
     private boolean shouldKeepServiceAlive() {
@@ -509,7 +517,7 @@ public abstract class PlaybackActivity extends BaseActivity implements MediaCont
 
         @Override
         public void onError(String msg) {
-            if (isOwner()) PlaybackActivity.this.onError(msg);
+            if (isOwner() && !isFinishing() && !isDestroyed()) PlaybackActivity.this.onError(msg);
         }
 
         @Override

@@ -208,6 +208,8 @@ site.api = "csp_XXX" ───────────────────�
 - **`assets://`** 是 APK 自身 assets 的虚拟地址（经本地 http 中转），原始 scheme 非 http，因此不解压。
 - **`assets/version` 既是被解压的资源也是版本标记**；解压时跳过它、最后写入，避免半解压被误判完成。
 - **外部存储不用于 jar**：曾尝试把解压资源放 `/sdcard/TV/jar` 并在启动引导「所有文件访问」权限，因权限需手动授予、路径随权限变化等已回退；jar 本体与解压资源统一留在内部 `cache/jar`。
+- **播放器退出的重活不要压在转场帧上**：`clearMediaItems`/`engine.release` 等在主线程开销大（见第 9 节）；退出时同步 `shutdown()`/`stopAndClear()` 会明显卡顿，应延后到转场之后执行。
+- **收尾阶段的播放错误要忽略**：`isFinishing()` 之后（含 `onStop/onDestroy` 释放 surface）播放器可能抛错，必须短路，否则会被误当成真实错误触发自动回退/切线路。
 - Gradle 构建脚本是 `app/build.gradle`（Groovy），不是 `.kts`；`kilo.json`/`.kilo` 为本项目 AI 配置目录（已 gitignore）。
 
 ---
@@ -222,6 +224,9 @@ site.api = "csp_XXX" ───────────────────�
 - `quickjs/.../utils/Module.java`、`chaquo/src/main/python/app.py`：脚本 `file://` 加载。
 - `app/.../utils/PermissionUtil.java`、`app/src/{mobile,leanback}/.../HomeActivity.java`：存储权限（外部目录功能使用）。
 - `app/.../utils/ImgUtil.java`：图片 URL 头后缀解析。
+- `app/.../playback/vod/VodPlaybackController.java`、`VodFallbackPolicy.java`：播放错误 → 自动切线路/切源的回退策略；退出的收尾错误在此短路。
+- `app/.../player/PlayerManager.java`：`stopping` 守卫（停止/释放期间忽略 `onPlayerError`/`onPlayTimeout`）。
+- `app/.../ui/activity/PlaybackActivity.java`、`app/.../service/PlaybackService.java`：服务关闭的延迟执行（`deferShutdown` / `tryShutdown`）。
 - `AGENTS.md`：本文件。
 
 ---
@@ -249,3 +254,77 @@ site.api = "csp_XXX" ───────────────────�
 4. `LiveConfig` 的 live `url`（`lives[].url`）支持 `jar://`。
 5. jar 本体与解压资源统一留在内部 `cache/jar`（`cache/jar/<md5(URL)>.jar`、`cache/jar/<md5(URL)>/assets/...`），不依赖外部存储权限。曾短暂改为「本体内部 + 解压资源外置 `/sdcard/TV/jar` + 启动权限引导」，随后**已回退**为全部内部。
 6. `Ikanbot.js` 豆瓣图片 Referer 修复；`ImgUtil` 头后缀支持。
+7. 修复 TV 退出播放页「误切线路 + 卡顿」：收尾阶段播放错误不再触发自动回退/切线路（`isHostFinishing` 短路），停止/释放期间不做解码/格式重试（`PlayerManager.stopping`），并把服务关闭/播放器释放延后到转场之后（`deferShutdown` / `tryShutdown`）。详见第 9 节。
+
+---
+
+## 9. 播放页退出：误切线路与退出卡顿（TV）
+
+### 9.1 现象
+
+- 电视版（leanback）从播放页按返回退出到首页时：先弹出「正在切换线路至「XXX」」，退出过程有明显卡顿；再次打开该视频停在被切换后的线路上（历史 `vodFlag` 被改写）。
+- 播放页没有加载视频（空播放器）时退出不卡，说明与播放器/解码器销毁相关。
+
+### 9.2 根因
+
+1. 退出收尾阶段播放器抛错（销毁 surface、解码器释放等）被当成真实播放错误 → `VodFallbackPolicy.fallbackToNextLine()` 自动切线路并落库。该提示文案 `play_switch_flag` 只由 `showSwitchLine()` 发出，可据此确认走的是回退路径。
+2. `PlayerManager.listener.onPlayerError` 在停止/释放期间仍执行 `engine.handleError`（`retryDecode`/`retryFormat` 会重建引擎 + 重新 prepare），主线程开销大。
+3. 退出时同步关闭服务：
+   - `PlaybackActivity.onDestroy` → `releaseService` → `mService.shutdown()` → `stopAndClear()`（`clearMediaItems` 等）；
+   - `unbindService` → `PlaybackService.onUnbind` → `tryShutdown()` → `shutdown()`。
+   `stopAndClear` 约 14–26ms，压在 Activity→Home 的转场帧上。
+
+### 9.3 修复
+
+- `VodPlaybackController.playbackError`：开头 `if (host.isHostFinishing()) return;`（与 `cannotApply` 一致）。
+- `VodFallbackPolicy.fallbackToNextLineOrSource`：开头 `if (host.isHostFinishing()) return;`。
+- `PlaybackActivity.mPlayerCallback.onError`：`if (isOwner() && !isFinishing() && !isDestroyed())`。
+- `PlayerManager`：新增 `stopping` 标志；`stop()`/`release()` 置 `true`，`setMediaItem()`（`start`/`startCurrent`/`browse`）置 `false`；`onPlayerError` 与 `onPlayTimeout` 在 `stopping` 时直接 `return`；`stop()` 增加 `App.removeCallbacks(runnable)`。
+- 服务关闭延后到转场之后：
+  - `PlaybackActivity.deferShutdown(service)`：`App.post(..., 250)`，执行前判断 `service.hasPlayerCallback() || service.hasMediaClient()`（防止误关被复用/后台播放的服务）。
+  - `PlaybackService.tryShutdown()`：改为 `App.post(..., 250)`，并在延迟回调里再次判断 `hasNavigationCallback() || hasMediaClient()`。
+- 真正原因是 `onUnbind → tryShutdown` 的同步 shutdown；`deferShutdown` 与 `tryShutdown` 二者都在 250ms 后触发，先到者执行 `shutdown()`，另一者因 `running==false` 空转，安全。
+
+### 9.4 实测（主线程耗时，退出到首页）
+
+- 修复前：`onDestroy total ≈38ms`（`stopAndClear≈26ms`、`shutdown≈27ms` 压在转场），服务 `playerRelease≈15ms`。
+- 修复后：`onDestroy total ≈12–16ms`；重活 `stopAndClear≈14ms`、`shutdown≈16ms`、`playerRelease≈11ms` 推迟到约 237ms（转场之后）。
+
+### 9.5 诊断方法（已移除，可复用）
+
+- 电视上不便 `adb logcat` 时：临时把计时写文件 + 通过 App 内置 HTTP Server 导出。
+  - 写 `/sdcard/TV/exit_diag.log`（无外部存储权限时回退到内部 `files` 目录）。
+  - `Nano.serve` 暴露 `/exitdiag`（查看）、`/exitdiag/clear`（清空）；浏览器打开 `http://<服务器地址>/exitdiag`，地址见 App 的「推送」页（`Server.get().getAddress()`）。
+- 埋点位置：`PlaybackActivity.onStop/onDestroy/releaseService/deferShutdown`、`PlaybackService.shutdown/onDestroy`、`PlayerManager.stop/release`。
+- 结论确认后，`ExitDiag`、Nano 路由及所有埋点均已移除，源码中无残留。
+
+### 9.6 注意
+
+- 延迟 250ms 意味着服务/前台通知多存活约 250ms，且 `player.stop()` 也随之延后（此前已 `pause`，无正确性影响）。
+- 以后若新增其他 `stopSelf()`/`shutdown()` 触发点，避免在转场或主线程同步执行 `clearMediaItems` / `engine.release` 等重活。
+- `MediaClients.isSelf` 使 App 自身 `MediaController` 的断连不触发服务自关（`onDisconnected` 直接 return），因此延迟关闭是安全的。
+
+### 9.7 本次更改的影响
+
+行为（功能）：
+
+- 退出播放页不再误切线路、不再改写 `vodFlag`，重新打开仍停在原线路；正观看时的真实播放错误仍会正常自动回退。
+- 共享代码（`VodPlaybackController`/`PlaybackActivity`）同时作用于 TV 与移动端，移动端退出也更稳。
+
+性能（卡顿）：
+
+- 退出时不再在转场帧上做错误重试（重建引擎/重新 prepare）与服务关闭（`stopAndClear`/`player.release`）。
+- 主线程 `onDestroy` 由 ~38ms 降到 ~12–16ms，重活推迟到 ~237ms。
+
+无影响：
+
+- jar 内嵌爬虫、直播、图片头、配置加载等未触碰；无新增权限、未改构建脚本/混淆规则/依赖；`Nano` 与 `ExitDiag` 均已还原/删除，源码无残留。
+
+副作用与注意：
+
+- 服务/前台通知多存活约 250ms、`player.stop()` 延后约 250ms（此时已 `pause`，无声音/正确性问题）；期间重进同一视频会复用服务（有 guarded 保护，不误杀新播放）。
+- `stop()` 之后到下次 `start()` 之间的错误被忽略（有意为之）；正常回退经 `start()/browse()` 会重新置位 `stopping`，不受影响。
+- `tryShutdown` 延迟同时覆盖 `onTaskRemoved`、外部媒体客户端断开等触发点，关闭晚 250ms，功能不受影响。
+- 若 250ms 观感过长，可调小（如 150ms）或改为转场结束回调，实测 250ms 已足够。
+
+回归建议：① 正常观看→返回首页（无提示、不卡、历史线路不变）；② 播放页内真实错误仍自动切线路；③ 退出后立即重进不被延迟关闭误杀；④ 后台播放/投屏（`hasMediaClient`）服务不被误关；⑤ 移动端退出正常。

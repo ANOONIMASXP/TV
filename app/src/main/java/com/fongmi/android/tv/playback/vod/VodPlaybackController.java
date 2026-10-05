@@ -234,6 +234,7 @@ public class VodPlaybackController {
     }
 
     public void playbackError(String msg) {
+        if (host.isHostFinishing()) return;
         preloader.clear();
         host.resetPlaybackForError(msg);
         fallbackPolicy.playbackError();
